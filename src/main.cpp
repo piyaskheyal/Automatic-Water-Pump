@@ -1,65 +1,128 @@
 #include <Arduino.h>
 #include <U8g2lib.h>
 #include <Wire.h>
+#include<Preferences.h>
 
-U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 
+/*
+==========================================================================================
+||                                Motor Variables                                       ||
+==========================================================================================
+*/
+Preferences mem;
 
-const int lowerThreshold = 5;
-const int upperThreshold = 90;
-
-// Button Variables
-const int buttonPin = 16;           // GPIO connected to the button
-volatile bool buttonReleased = false; // Flag set by the ISR
-unsigned long lastDebounceTime = 0; // Timestamp of last valid event
-const unsigned long debounceDelay = 50; // Debounce time in ms
-
-const int motorPin = 4;
+// Motor control with persistent storage
 bool motorState = false;
-
-const int trig_pin = 19;
-const int echo_pin = 18;
-
-const float maxDistance = 30;  // Maximum measurable distance in cm
-
-// Title settings
-const char* title = "Water Level";
-const int titleX = 20;   // X position for the title text
-const int titleY = 12;   // Y position for the title text
-
-// Vertical bar settings (positioned below the title)
-const int barX = 10;
-const int barY = 20;         // Start the bar below the title
-const int barMaxHeight = 35; // Maximum height in pixels for the bar
-const int barWidth = 10;     // Bar width in pixels
+const char* prefsNamespace = "motorCtrl";
+const char* stateKey = "motorState";
+const int motorPin = 4;
 
 // Motor status text coordinates (right portion of the display)
 const int motorStatusX = 65;
 const int motorStatusY = 40;
 
-// Interrupt Service Routine (ISR) for button release
+
+// Display Settings
+U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+/*
+==========================================================================================
+||                                 Container Spec                                       ||
+==========================================================================================
+*/
+const int lowerThreshold = 5;
+const int upperThreshold = 90;
+const int containerOffset = 5;
+const int containerHeight = 30;  // Maximum measurable distance in cm
+
+/*
+==========================================================================================
+||                               Button Variables                                       ||
+==========================================================================================
+*/
+const int buttonPin = 16;           // GPIO connected to the button
+volatile bool buttonReleased = false; // Flag set by the ISR
+unsigned long lastDebounceTime = 0; // Timestamp of last valid event
+const unsigned long debounceDelay = 50; // Debounce time in ms
+
+// Ultrasonic Sensor Variables
+const int trig_pin = 19;
+const int echo_pin = 18;
+
+/*
+==========================================================================================
+||                                      Title                                           ||
+==========================================================================================
+*/
+
+const char* title = "Water Level";
+const int titleX = 20;   // X position for the title text
+const int titleY = 12;   // Y position for the title text
+
+/*
+==========================================================================================
+||                                   Vertical Bar                                       ||
+==========================================================================================
+*/
+const int barX = 10;
+const int barY = 20;         // Start the bar below the title
+const int barMaxHeight = 35; // Maximum height in pixels for the bar
+const int barWidth = 10;     // Bar width in pixels
+
+
+/*
+==========================================================================================
+||                                  ISR (Button)                                        ||
+==========================================================================================
+*/
 void IRAM_ATTR handleButtonRelease() {
     buttonReleased = true; // Set flag when button is released
     lastDebounceTime = millis();
 }
 
+
+/*
+==========================================================================================
+||                               Function Declaration                                   ||
+==========================================================================================
+*/
 float getDistance();
 bool getEvent();
 
+
+/*
+==========================================================================================
+||                                      Setup                                           ||
+==========================================================================================
+*/
 void setup() {
     Serial.begin(115200);
+
+    mem.begin(prefsNamespace, false);  // RW mode
+
+    // Load stored motor state
+    motorState = mem.getBool(stateKey, false);  // Default to false if not found
+    Serial.printf("Loaded motor state: %s\n", motorState ? "ON" : "OFF");
+
     pinMode(motorPin, OUTPUT);
+    digitalWrite(motorPin, motorState);
+
     pinMode(echo_pin, INPUT);
     pinMode(trig_pin, OUTPUT);
     digitalWrite(trig_pin, LOW);
-    digitalWrite(motorPin, LOW);
-    pinMode(buttonPin, INPUT_PULLUP); // Enable internal pull-up
+
+    pinMode(buttonPin, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(buttonPin), handleButtonRelease, RISING);
 
-    // Initialize the OLED display
     u8g2.begin();
 }
 
+
+/*
+==========================================================================================
+||                                      Loop                                           ||
+==========================================================================================
+*/
 void loop() {
     float d = getDistance();
     Serial.print("Distance: ");
@@ -68,24 +131,32 @@ void loop() {
     Serial.print(d / 2.54);
     Serial.println(" in");
 
-    // Calculate percentage based on the measured distance.
-    // p represents the empty percentage.
-    int p = (int)((d / maxDistance) * 100);
-    // The water level percentage (full when distance is 0)
-    int waterLevelPercentage = 100 - p;
-
-
-    // Clamp waterLevelPercentage between 0 and 100.
-    if(waterLevelPercentage < 0) waterLevelPercentage = 0;
-    else if(waterLevelPercentage > 100) waterLevelPercentage = 100;
+    int waterLevelPercentage = map((int)d, containerHeight, containerOffset, 0, 100);
+    waterLevelPercentage = constrain(waterLevelPercentage, 0, 100); // Clamp to 0-100
 
     if(getEvent() && (waterLevelPercentage >= lowerThreshold && waterLevelPercentage <= upperThreshold)){
         motorState = !motorState;
+
+        if(mem.getBool(stateKey) != motorState){
+            mem.putBool(stateKey, motorState);  // Save new state
+            Serial.println("State saved");
+        }
+        Serial.println("Manual Toggle!");
     }else{
         if(waterLevelPercentage < lowerThreshold){
-            motorState = true;
-        }else if(waterLevelPercentage > upperThreshold){
-            motorState = false;
+            if(!motorState) {
+                motorState = true;
+                if(mem.getBool(stateKey) != motorState){
+                    mem.putBool(stateKey, motorState);  // Save auto-enable
+                }
+            }
+        } else if(waterLevelPercentage > upperThreshold){
+            if(motorState) {
+                motorState = false;
+                if(mem.getBool(stateKey) != motorState){
+                    mem.putBool(stateKey, motorState);  // Save auto-disable
+                }
+            }
         }
     }
 
@@ -95,23 +166,21 @@ void loop() {
     // Calculate the fill height for the bar:
     // When waterLevelPercentage is 100, fill height equals barMaxHeight (full bar);
     // When waterLevelPercentage is 0, fill height is 0.
-    int fillHeight = (int)(waterLevelPercentage * barMaxHeight / 100.0);
+    int fillHeight = (waterLevelPercentage * barMaxHeight / 100.0);
     // Compute the top Y coordinate of the filled area (to fill from the bottom up)
     int fillY = barY + (barMaxHeight - fillHeight);
 
-    // Prepare the display
     u8g2.clearBuffer();
 
-    // Draw the title
+    // Title
     u8g2.setFont(u8g2_font_ncenB08_tr);
     u8g2.drawStr(titleX, titleY, title);
 
-    // Draw the vertical bar frame
+    // Vertical Bar
     u8g2.drawFrame(barX, barY, barWidth, barMaxHeight);
-    // Draw the filled portion of the bar from the bottom up
     u8g2.drawBox(barX, fillY, barWidth, fillHeight);
 
-    // Display the water level percentage next to the bar
+    // Water Level Percentage
     char buf[20];
     sprintf(buf, "%d%%", waterLevelPercentage);
     u8g2.drawStr(barX + barWidth + 5, barY + barMaxHeight / 2, buf);
@@ -127,7 +196,11 @@ void loop() {
     delay(10);
 }
 
-// Returns true only if a valid button release is detected
+/*
+==========================================================================================
+||                                 Button Event                                         ||
+==========================================================================================
+*/
 bool getEvent() {
     if (buttonReleased) {
       unsigned long currentTime = millis();
@@ -145,6 +218,12 @@ bool getEvent() {
     return false;
   }
 
+
+/*
+==========================================================================================
+||                            Ultrasonic Distance Detection                             ||
+==========================================================================================
+*/
 float getDistance() {
     const int numSamples = 15;
     float sum = 0.0;
