@@ -4,6 +4,16 @@
 
 U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 
+
+const int lowerThreshold = 5;
+const int upperThreshold = 90;
+
+// Button Variables
+const int buttonPin = 16;           // GPIO connected to the button
+volatile bool buttonReleased = false; // Flag set by the ISR
+unsigned long lastDebounceTime = 0; // Timestamp of last valid event
+const unsigned long debounceDelay = 50; // Debounce time in ms
+
 const int motorPin = 4;
 bool motorState = false;
 
@@ -27,7 +37,14 @@ const int barWidth = 10;     // Bar width in pixels
 const int motorStatusX = 65;
 const int motorStatusY = 40;
 
+// Interrupt Service Routine (ISR) for button release
+void IRAM_ATTR handleButtonRelease() {
+    buttonReleased = true; // Set flag when button is released
+    lastDebounceTime = millis();
+}
+
 float getDistance();
+bool getEvent();
 
 void setup() {
     Serial.begin(115200);
@@ -36,6 +53,8 @@ void setup() {
     pinMode(trig_pin, OUTPUT);
     digitalWrite(trig_pin, LOW);
     digitalWrite(motorPin, LOW);
+    pinMode(buttonPin, INPUT_PULLUP); // Enable internal pull-up
+    attachInterrupt(digitalPinToInterrupt(buttonPin), handleButtonRelease, RISING);
 
     // Initialize the OLED display
     u8g2.begin();
@@ -54,15 +73,20 @@ void loop() {
     int p = (int)((d / maxDistance) * 100);
     // The water level percentage (full when distance is 0)
     int waterLevelPercentage = 100 - p;
-    
+
+
     // Clamp waterLevelPercentage between 0 and 100.
     if(waterLevelPercentage < 0) waterLevelPercentage = 0;
     else if(waterLevelPercentage > 100) waterLevelPercentage = 100;
 
-    if(waterLevelPercentage < 5){
-        motorState = true;
-    }else if(waterLevelPercentage > 90){
-        motorState = false;
+    if(getEvent() && (waterLevelPercentage >= lowerThreshold && waterLevelPercentage <= upperThreshold)){
+        motorState = !motorState;
+    }else{
+        if(waterLevelPercentage < lowerThreshold){
+            motorState = true;
+        }else if(waterLevelPercentage > upperThreshold){
+            motorState = false;
+        }
     }
 
     if(motorState) digitalWrite(motorPin,HIGH);
@@ -100,8 +124,26 @@ void loop() {
 
     u8g2.sendBuffer();
 
-    delay(100);
+    delay(10);
 }
+
+// Returns true only if a valid button release is detected
+bool getEvent() {
+    if (buttonReleased) {
+      unsigned long currentTime = millis();
+      
+      // Check if debounce delay has passed
+      if (currentTime - lastDebounceTime >= debounceDelay) {
+        bool buttonState = digitalRead(buttonPin);
+        buttonReleased = false; // Reset flag FIRST to prevent re-trigger
+        lastDebounceTime = currentTime;
+        
+        // Return true only if button is still released (HIGH)
+        return (buttonState == HIGH);
+      }
+    }
+    return false;
+  }
 
 float getDistance() {
     const int numSamples = 15;
@@ -120,7 +162,7 @@ float getDistance() {
         float distance = (duration * 0.034) / 2;
         sum += distance;
 
-        delay(10);  // Short delay between samples
+        delay(8);  // Short delay between samples
     }
     
     return sum / numSamples;
