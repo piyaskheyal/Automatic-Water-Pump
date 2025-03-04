@@ -45,7 +45,12 @@ volatile bool buttonReleased = false; // Flag set by the ISR
 unsigned long lastDebounceTime = 0; // Timestamp of last valid event
 const unsigned long debounceDelay = 50; // Debounce time in ms
 
-// Ultrasonic Sensor Variables
+/*
+==========================================================================================
+||                            Ultrasonic Sensor Variable                                ||
+==========================================================================================
+*/
+
 const int trig_pin = 33;
 const int echo_pin = 25;
 
@@ -124,7 +129,7 @@ void setup() {
 ==========================================================================================
 */
 void loop() {
-    int d = getDistance();
+    float d = getDistance();
     Serial.print("Distance: ");
     Serial.print(d);
     Serial.print(" cm | ");
