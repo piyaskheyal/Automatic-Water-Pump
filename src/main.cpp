@@ -15,7 +15,7 @@ Preferences mem;
 bool motorState = false;
 const char* prefsNamespace = "motorCtrl";
 const char* stateKey = "motorState";
-const int motorPin = 4;
+const int motorPin = 18;
 
 // Motor status text coordinates (right portion of the display)
 const int motorStatusX = 65;
@@ -32,22 +32,22 @@ U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 */
 const int lowerThreshold = 5;
 const int upperThreshold = 90;
-const int containerOffset = 5;
-const int containerHeight = 30;  // Maximum measurable distance in cm
+const int containerOffset = 10;
+const int containerHeight = 120;  // Maximum measurable distance in cm
 
 /*
 ==========================================================================================
 ||                               Button Variables                                       ||
 ==========================================================================================
 */
-const int buttonPin = 16;           // GPIO connected to the button
+const int buttonPin = 32;           // GPIO connected to the button
 volatile bool buttonReleased = false; // Flag set by the ISR
 unsigned long lastDebounceTime = 0; // Timestamp of last valid event
 const unsigned long debounceDelay = 50; // Debounce time in ms
 
 // Ultrasonic Sensor Variables
-const int trig_pin = 19;
-const int echo_pin = 18;
+const int trig_pin = 33;
+const int echo_pin = 25;
 
 /*
 ==========================================================================================
@@ -124,7 +124,7 @@ void setup() {
 ==========================================================================================
 */
 void loop() {
-    float d = getDistance();
+    int d = getDistance();
     Serial.print("Distance: ");
     Serial.print(d);
     Serial.print(" cm | ");
@@ -134,10 +134,12 @@ void loop() {
     int waterLevelPercentage = map((int)d, containerHeight, containerOffset, 0, 100);
     waterLevelPercentage = constrain(waterLevelPercentage, 0, 100); // Clamp to 0-100
 
+    bool previousMotorState = mem.getBool(stateKey);
+
     if(getEvent() && (waterLevelPercentage >= lowerThreshold && waterLevelPercentage <= upperThreshold)){
         motorState = !motorState;
 
-        if(mem.getBool(stateKey) != motorState){
+        if(previousMotorState != motorState){
             mem.putBool(stateKey, motorState);  // Save new state
             Serial.println("State saved");
         }
@@ -146,14 +148,14 @@ void loop() {
         if(waterLevelPercentage < lowerThreshold){
             if(!motorState) {
                 motorState = true;
-                if(mem.getBool(stateKey) != motorState){
+                if(previousMotorState != motorState){
                     mem.putBool(stateKey, motorState);  // Save auto-enable
                 }
             }
         } else if(waterLevelPercentage > upperThreshold){
             if(motorState) {
                 motorState = false;
-                if(mem.getBool(stateKey) != motorState){
+                if(previousMotorState != motorState){
                     mem.putBool(stateKey, motorState);  // Save auto-disable
                 }
             }
@@ -225,7 +227,7 @@ bool getEvent() {
 ==========================================================================================
 */
 float getDistance() {
-    const int numSamples = 15;
+    const int numSamples = 2;
     float sum = 0.0;
 
     for (int i = 0; i < numSamples; i++) {
@@ -241,7 +243,7 @@ float getDistance() {
         float distance = (duration * 0.034) / 2;
         sum += distance;
 
-        delay(8);  // Short delay between samples
+        delay(5);  // Short delay between samples
     }
     
     return sum / numSamples;
