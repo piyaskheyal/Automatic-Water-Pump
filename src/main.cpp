@@ -148,7 +148,7 @@ int errorCount = 0;
 */
 
 const char* title = "Water Level";
-const int titleX = 20;   // X position for the title text
+const int titleX = 30;   // X position for the title text
 const int titleY = 12;   // Y position for the title text
 
 /*
@@ -332,12 +332,12 @@ void loop() {
         // Water Level Percentage
         char buf[20];
         sprintf(buf, "%d%%", waterLevelPercentage);
-        u8g2.drawStr(barX + barWidth + 5, barY + barMaxHeight / 2, buf);
+        u8g2.drawStr(barX + barWidth + 5, barY + (barMaxHeight / 2) + 3, buf);
 
         if (motorState) {
-            u8g2.drawStr(motorStatusX, motorStatusY, "Motor ON");
+            u8g2.drawStr(motorStatusX, motorStatusY, "Pump ON");
         } else{
-            u8g2.drawStr(motorStatusX, motorStatusY, "Motor OFF");
+            u8g2.drawStr(motorStatusX, motorStatusY, "Pump OFF");
         }
 
         static unsigned long lastUpdate = 0;
