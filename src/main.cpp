@@ -16,6 +16,8 @@ bool motorState = false;
 const char* prefsNamespace = "motorCtrl";
 const char* stateKey = "motorState";
 const int motorPin = 18;
+const unsigned long toggleCooldown = 2000; // 2 seconds
+unsigned long lastAutoToggleTime = 0;
 
 // Motor status text coordinates (right portion of the display)
 const int motorStatusX = 65;
@@ -34,6 +36,7 @@ const int lowerThreshold = 5;
 const int upperThreshold = 90;
 const int containerOffset = 10;
 const int containerHeight = 120;  // Maximum measurable distance in cm
+const int hysteresis = 2; // 2% buffer
 
 /*
 ==========================================================================================
@@ -51,8 +54,23 @@ const unsigned long debounceDelay = 50; // Debounce time in ms
 ==========================================================================================
 */
 
-const int trig_pin = 33;
-const int echo_pin = 25;
+// Pin assignments
+const int trigPin = 33;
+const int echoPin = 25;
+
+// Timeout in microseconds (30ms)
+const unsigned int timeout = 30000; 
+
+// State machine for ultrasonic measurement
+enum UltrasonicState { READY, TRIGGERED, WAITING_FOR_FALLING, DONE };
+volatile UltrasonicState usState = READY;
+
+volatile unsigned long echoStartTime = 0;
+volatile unsigned long echoEndTime = 0;
+unsigned long triggerTime = 0;
+float lastDistance = 0.0;
+int sensorMaxError = 10;
+int errorCount = 0;
 
 /*
 ==========================================================================================
@@ -88,6 +106,28 @@ void IRAM_ATTR handleButtonRelease() {
 
 /*
 ==========================================================================================
+||                                 ISR (Ultrasonic Sensor)                              ||
+==========================================================================================
+*/
+
+void IRAM_ATTR echoISR() {
+    static unsigned long lastPulseTime = 0;
+    unsigned long now = micros();
+
+    if (digitalRead(echoPin) == HIGH) {
+        echoStartTime = now;
+        usState = WAITING_FOR_FALLING;
+    } else {
+        // Ensure pulse duration is valid (>0)
+        if (usState == WAITING_FOR_FALLING && now > echoStartTime) {
+            echoEndTime = now;
+            usState = DONE;
+        }
+    }
+}
+
+/*
+==========================================================================================
 ||                               Function Declaration                                   ||
 ==========================================================================================
 */
@@ -112,12 +152,18 @@ void setup() {
     pinMode(motorPin, OUTPUT);
     digitalWrite(motorPin, motorState);
 
-    pinMode(echo_pin, INPUT);
-    pinMode(trig_pin, OUTPUT);
-    digitalWrite(trig_pin, LOW);
+    // Set up sensor pins
+    pinMode(trigPin, OUTPUT);
+    pinMode(echoPin, INPUT); // Try using INPUT, or if needed, INPUT_PULLUP
+    delay(500);
 
     pinMode(buttonPin, INPUT_PULLUP);
+
     attachInterrupt(digitalPinToInterrupt(buttonPin), handleButtonRelease, RISING);
+    attachInterrupt(digitalPinToInterrupt(echoPin), echoISR, CHANGE);
+
+    echoStartTime = micros();
+    echoEndTime = micros();
 
     u8g2.begin();
 }
@@ -125,50 +171,74 @@ void setup() {
 
 /*
 ==========================================================================================
-||                                      Loop                                           ||
+||                                       Loop                                           ||
 ==========================================================================================
 */
 void loop() {
+    bool previousMotorState = mem.getBool(stateKey);
+
     float d = getDistance();
+
     Serial.print("Distance: ");
     Serial.print(d);
-    Serial.print(" cm | ");
-    Serial.print(d / 2.54);
-    Serial.println(" in");
+    Serial.println(" cm");
+
+    if(d == -1 || d > containerHeight){
+        Serial.println("Error!!!");
+        ++errorCount;
+        if(errorCount >= sensorMaxError){
+            motorState = false;
+            if(motorState != previousMotorState){
+                mem.putBool(stateKey, motorState);
+            }
+            digitalWrite(motorPin, LOW);
+        }
+        return;
+    }
+    errorCount = 0;
 
     int waterLevelPercentage = map((int)d, containerHeight, containerOffset, 0, 100);
     waterLevelPercentage = constrain(waterLevelPercentage, 0, 100); // Clamp to 0-100
 
-    bool previousMotorState = mem.getBool(stateKey);
+    /*
+    if (getEvent() && waterLevelPercentage >= lowerThreshold && waterLevelPercentage <= upperThreshold) {
+        motorState = !motorState;  // Toggle state manually
+    } else if (waterLevelPercentage < (lowerThreshold - hysteresis)) {
+        motorState = true;  // Auto-start motor
+    } else if (waterLevelPercentage > (upperThreshold + hysteresis)) {
+        motorState = false;  // Auto-stop motor
+    }
+    */
 
-    if(getEvent() && (waterLevelPercentage >= lowerThreshold && waterLevelPercentage <= upperThreshold)){
-        motorState = !motorState;
-
-        if(previousMotorState != motorState){
-            mem.putBool(stateKey, motorState);  // Save new state
-            Serial.println("State saved");
-        }
+    if (getEvent() && waterLevelPercentage >= lowerThreshold && waterLevelPercentage <= upperThreshold) {
+        motorState = !motorState;  // Toggle state manually (no cooldown)
         Serial.println("Manual Toggle!");
-    }else{
-        if(waterLevelPercentage < lowerThreshold){
-            if(!motorState) {
+    } 
+    else {
+        // Auto-toggle with cooldown protection
+        if (waterLevelPercentage < (lowerThreshold - hysteresis)) {
+            if (!motorState && (millis() - lastAutoToggleTime >= toggleCooldown)) {
                 motorState = true;
-                if(previousMotorState != motorState){
-                    mem.putBool(stateKey, motorState);  // Save auto-enable
-                }
+                lastAutoToggleTime = millis();
+                Serial.println("Auto-ON (Low Level)");
             }
-        } else if(waterLevelPercentage > upperThreshold){
-            if(motorState) {
+        } 
+        else if (waterLevelPercentage > (upperThreshold + hysteresis)) {
+            if (motorState && (millis() - lastAutoToggleTime >= toggleCooldown)) {
                 motorState = false;
-                if(previousMotorState != motorState){
-                    mem.putBool(stateKey, motorState);  // Save auto-disable
-                }
+                lastAutoToggleTime = millis();
+                Serial.println("Auto-OFF (High Level)");
             }
         }
     }
+    
+    // Save state if changed
+    if (previousMotorState != motorState) {
+        mem.putBool(stateKey, motorState);
+        Serial.println("Motor state changed & saved!");
+    }
+    digitalWrite(motorPin, motorState ? HIGH : LOW);
 
-    if(motorState) digitalWrite(motorPin,HIGH);
-    else digitalWrite(motorPin, LOW);
     
     // Calculate the fill height for the bar:
     // When waterLevelPercentage is 100, fill height equals barMaxHeight (full bar);
@@ -198,9 +268,11 @@ void loop() {
         u8g2.drawStr(motorStatusX, motorStatusY, "Motor OFF");
     }
 
-    u8g2.sendBuffer();
-
-    delay(10);
+    static unsigned long lastUpdate = 0;
+    if (millis() - lastUpdate >= 10) {  // Non-blocking delay
+        lastUpdate = millis();
+        u8g2.sendBuffer();
+    }
 }
 
 /*
@@ -232,24 +304,39 @@ bool getEvent() {
 ==========================================================================================
 */
 float getDistance() {
-    const int numSamples = 2;
-    float sum = 0.0;
-
-    for (int i = 0; i < numSamples; i++) {
-        digitalWrite(trig_pin, LOW);
+    // Start a new measurement if the sensor is ready
+    if (usState == READY) {
+        digitalWrite(trigPin, LOW);
         delayMicroseconds(2);
-
-        digitalWrite(trig_pin, HIGH);
+        digitalWrite(trigPin, HIGH);
         delayMicroseconds(10);
-        digitalWrite(trig_pin, LOW);
-
-        // Measure the duration of the HIGH pulse on the echo pin with a timeout of 30ms
-        long duration = pulseIn(echo_pin, HIGH, 30000);
-        float distance = (duration * 0.034) / 2;
-        sum += distance;
-
-        delay(5);  // Short delay between samples
+        digitalWrite(trigPin, LOW);
+        triggerTime = micros();
+        usState = TRIGGERED;
     }
-    
-    return sum / numSamples;
+
+    // Check for timeout in the WAITING_FOR_FALLING state
+    if (usState == WAITING_FOR_FALLING && (micros() - triggerTime > timeout)) {
+        // If no falling edge within timeout, force completion using timeout duration
+        usState = READY;  // Reset state for the next measurement
+        lastDistance = -1;
+        return -1;  // Return error indicator
+    }
+
+    // Once the measurement is complete, calculate the distance
+    if (usState == DONE) {
+        unsigned long duration = echoEndTime - echoStartTime;
+
+        // Check for invalid duration (e.g., if both times are 0)
+        if (duration == 0) {
+            usState = READY;
+            lastDistance = -1;
+            return -1;
+        }
+
+        lastDistance = (duration * 0.034) / 2.0;  // Convert duration to cm
+        usState = READY;  // Reset state for the next measurement
+    }
+
+    return lastDistance;
 }
