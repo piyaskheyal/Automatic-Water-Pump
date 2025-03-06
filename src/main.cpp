@@ -2,6 +2,8 @@
 #include <U8g2lib.h>
 #include <Wire.h>
 #include<Preferences.h>
+#include <WiFi.h>
+#include "time.h"
 
 
 const unsigned char sensorError [] PROGMEM = {
@@ -72,6 +74,30 @@ const unsigned char sensorError [] PROGMEM = {
 	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 };
 
+/*
+==========================================================================================
+||                                  Hold Mechanism                                      ||
+==========================================================================================
+*/
+
+unsigned long holdStartTime = 0;
+bool holdActive = false;
+const unsigned long holdDuration = 90000; // 1.5 minutes in milliseconds
+
+
+/*
+==========================================================================================
+||                                  Wi-Fi & Timer                                       ||
+==========================================================================================
+*/
+const char* ssid     = "Router 1";
+const char* password = "kheyal2g";
+
+// NTP settings
+const char* ntpServer = "pool.ntp.org";
+const long  gmtOffset_sec = 6 * 3600;  // For UTC+6
+const int   daylightOffset_sec = 0;    // No DST
+const unsigned int ntpTimeout = 5000; // 5 sec
 
 /*
 ==========================================================================================
@@ -85,7 +111,7 @@ bool motorState = false;
 const char* prefsNamespace = "motorCtrl";
 const char* stateKey = "motorState";
 const int motorPin = 18;
-const unsigned long toggleCooldown = 2000; // 2 seconds
+const unsigned long toggleCooldown = 2000; // 2 sec
 unsigned long lastAutoToggleTime = 0;
 
 // Motor status text coordinates (right portion of the display)
@@ -101,10 +127,11 @@ U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 ||                                 Container Spec                                       ||
 ==========================================================================================
 */
-const int lowerThreshold = 10;
-const int upperThreshold = 90;
-const int containerOffset = 10;
-const int containerHeight = 100;  // Maximum measurable distance in cm
+const int lowerThreshold = 25;
+const int upperThreshold = 80;
+const int extremeUpperThreshold = 95;
+const int containerOffset = 15;
+const int containerHeight = 115;  // Maximum measurable distance in cm
 const int hysteresis = 2; // 2% buffer
 
 /*
@@ -112,8 +139,14 @@ const int hysteresis = 2; // 2% buffer
 ||                               Button Variables                                       ||
 ==========================================================================================
 */
+// const int buttonPin = 32;           // GPIO connected to the button
+// volatile bool buttonReleased = false; // Flag set by the ISR
+// unsigned long lastDebounceTime = 0; // Timestamp of last valid event
+// const unsigned long debounceDelay = 50; // Debounce time in ms
+// volatile unsigned long lastButtonInterruptTime = 0;
+
 const int buttonPin = 32;           // GPIO connected to the button
-volatile bool buttonReleased = false; // Flag set by the ISR
+volatile bool buttonPressed = false; // Flag set by the ISR
 unsigned long lastDebounceTime = 0; // Timestamp of last valid event
 const unsigned long debounceDelay = 50; // Debounce time in ms
 
@@ -167,9 +200,15 @@ const int barWidth = 10;     // Bar width in pixels
 ||                                  ISR (Button)                                        ||
 ==========================================================================================
 */
-void IRAM_ATTR handleButtonRelease() {
-    buttonReleased = true; // Set flag when button is released
-    lastDebounceTime = millis();
+void IRAM_ATTR handleButtonPress() {
+    static unsigned long lastInterruptTime = 0;
+    unsigned long interruptTime = micros();
+    
+    // Software debounce
+    if (interruptTime - lastInterruptTime > debounceDelay*1000) {
+        buttonPressed = true;
+    }
+    lastInterruptTime = interruptTime;
 }
 
 
@@ -180,7 +219,6 @@ void IRAM_ATTR handleButtonRelease() {
 */
 
 void IRAM_ATTR echoISR() {
-    static unsigned long lastPulseTime = 0;
     unsigned long now = micros();
 
     if (digitalRead(echoPin) == HIGH) {
@@ -202,6 +240,7 @@ void IRAM_ATTR echoISR() {
 */
 float getDistance();
 bool getEvent();
+void checkWiFi();
 
 
 /*
@@ -211,6 +250,15 @@ bool getEvent();
 */
 void setup() {
     Serial.begin(115200);
+    WiFi.begin(ssid, password);
+
+    // Connect to Wi-Fi
+    Serial.println("Connecting to WiFi");
+        while (WiFi.status() != WL_CONNECTED) {
+        delay(1000);
+        Serial.print("#");
+    }
+    Serial.println("\nConnected to WiFi");
 
     mem.begin(prefsNamespace, false);  // RW mode
 
@@ -227,14 +275,42 @@ void setup() {
     delay(500);
 
     pinMode(buttonPin, INPUT_PULLUP);
+    attachInterrupt(digitalPinToInterrupt(buttonPin), handleButtonPress, FALLING);
 
-    attachInterrupt(digitalPinToInterrupt(buttonPin), handleButtonRelease, RISING);
     attachInterrupt(digitalPinToInterrupt(echoPin), echoISR, CHANGE);
 
     echoStartTime = micros();
     echoEndTime = micros();
 
     u8g2.begin();
+
+    Serial.println("\nConnected to WiFi");
+    Serial.print("IP Address: ");
+    Serial.println(WiFi.localIP());
+
+    // Synchronize time with NTP server
+    configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+    struct tm timeinfo;
+    unsigned long start = millis();
+    bool timeObtained = false;
+
+    while (!timeObtained && (millis() - start < ntpTimeout)) { // try for up to 5 seconds
+        if (getLocalTime(&timeinfo)) {
+            timeObtained = true;
+        } else {
+            delay(100);
+            Serial.print(".");
+        }
+    }
+
+    if (!timeObtained) {
+        Serial.println("Failed to obtain time");
+        return;
+    }
+
+
+    Serial.print("Current time: ");
+    Serial.println(asctime(&timeinfo));
 }
 
 
@@ -245,6 +321,26 @@ void setup() {
 */
 void loop() {
     bool previousMotorState = mem.getBool(stateKey);
+    struct tm timeinfo;
+    int hr = -1, min = -1;
+
+    checkWiFi();
+
+    if (getLocalTime(&timeinfo)){
+        hr = timeinfo.tm_hour;
+        min = timeinfo.tm_min;
+    }else{
+        Serial.println("Time unavilable.  Skipping auto Toggle");
+    }
+    if(hr == 12 && min == 30){
+        ESP.restart();
+        u8g2.begin();
+        delay(6*1000);
+    }
+    bool withinAllowedHours = 
+    (hr >= 7 && hr < 12) || 
+    (hr == 13 && min >= 30) ||  // 1:30 PM to 1:59 PM
+    (hr >= 14 && hr < 18);      // 2:00 PM to 5:59 PM
 
     float d = getDistance();
 
@@ -272,35 +368,49 @@ void loop() {
         int waterLevelPercentage = map((int)d, containerHeight, containerOffset, 0, 100);
         waterLevelPercentage = constrain(waterLevelPercentage, 0, 100); // Clamp to 0-100
 
-        /*
-        if (getEvent() && waterLevelPercentage >= lowerThreshold && waterLevelPercentage <= upperThreshold) {
-            motorState = !motorState;  // Toggle state manually
-        } else if (waterLevelPercentage < (lowerThreshold - hysteresis)) {
-            motorState = true;  // Auto-start motor
-        } else if (waterLevelPercentage > (upperThreshold + hysteresis)) {
-            motorState = false;  // Auto-stop motor
-        }
-        */
-
-        if (getEvent() && waterLevelPercentage >= lowerThreshold && waterLevelPercentage <= upperThreshold) {
+        if (getEvent()) {
             motorState = !motorState;  // Toggle state manually (no cooldown)
+            holdActive = false;
             Serial.println("Manual Toggle!");
-        } 
-        else {
+        }else {
             // Auto-toggle with cooldown protection
-            if (waterLevelPercentage < (lowerThreshold - hysteresis)) {
+            if ((waterLevelPercentage < (lowerThreshold - hysteresis)) && withinAllowedHours) {
+                // Auto-on: if water level is too low, turn on the pump
                 if (!motorState && (millis() - lastAutoToggleTime >= toggleCooldown)) {
                     motorState = true;
+                    holdActive = false;  // Cancel any hold if active
                     lastAutoToggleTime = millis();
                     Serial.println("Auto-ON (Low Level)");
                 }
-            } 
-            else if (waterLevelPercentage > (upperThreshold + hysteresis)) {
-                if (motorState && (millis() - lastAutoToggleTime >= toggleCooldown)) {
+            }else if (waterLevelPercentage > extremeUpperThreshold) {// Extreme level check (MUST COME BEFORE REGULAR UPPER CHECK)
+                if (motorState) {
                     motorState = false;
-                    lastAutoToggleTime = millis();
-                    Serial.println("Auto-OFF (High Level)");
+                    lastAutoToggleTime = millis();  // Reset cooldown
+                    holdActive = false;  // Cancel any active hold
+                    Serial.println("Emergency OFF (Extreme Level)");
                 }
+            }else if (waterLevelPercentage > (upperThreshold + hysteresis)) {
+                // Auto-off: water level is high. Use hold mechanism.
+                if (motorState) {  // Only apply if pump is currently on
+                    if (!holdActive) {
+                        // Start the hold period
+                        holdActive = true;
+                        holdStartTime = millis();
+                        Serial.println("Hold period started for auto-off");
+                    } else if (millis() - holdStartTime >= holdDuration) {
+                        // Hold period has expired. Check sensor again:
+                        if (waterLevelPercentage > (upperThreshold)) {
+                            motorState = false;
+                            lastAutoToggleTime = millis();
+                            Serial.println("Auto-OFF (High Level) after hold");
+                        }
+                        // Reset the hold flag in either case.
+                        holdActive = false;
+                    }
+                }
+            } else {
+                // If water level is not above the upper threshold, cancel any hold
+                holdActive = false;
             }
         }
         
@@ -353,22 +463,33 @@ void loop() {
 ||                                 Button Event                                         ||
 ==========================================================================================
 */
+
 bool getEvent() {
-    if (buttonReleased) {
-      unsigned long currentTime = millis();
-      
-      // Check if debounce delay has passed
-      if (currentTime - lastDebounceTime >= debounceDelay) {
-        bool buttonState = digitalRead(buttonPin);
-        buttonReleased = false; // Reset flag FIRST to prevent re-trigger
-        lastDebounceTime = currentTime;
-        
-        // Return true only if button is still released (HIGH)
-        return (buttonState == HIGH);
-      }
+    static bool waitingForRelease = false;
+    static unsigned long pressTime = 0;
+    
+    if (buttonPressed) {
+        buttonPressed = false;
+        waitingForRelease = true;
+        pressTime = millis();
     }
+    
+    if (waitingForRelease) {
+        // Check if button is released after minimum press time
+        if (digitalRead(buttonPin) == HIGH) { // Button released
+            waitingForRelease = false;
+            return true;
+        }
+        
+        // Timeout for button being held too long
+        if (millis() - pressTime > 1000) { // 1 second timeout
+            waitingForRelease = false;
+        }
+    }
+    
     return false;
-  }
+}
+
 
 
 /*
@@ -396,6 +517,15 @@ float getDistance() {
         return -1;  // Return error indicator
     }
 
+    // Check for timeout in Triggered state
+    if (usState == TRIGGERED) {
+        if (micros() - triggerTime > timeout) {
+            usState = READY;
+            lastDistance = -1;
+            return -1;
+        }
+    }
+
     // Once the measurement is complete, calculate the distance
     if (usState == DONE) {
         unsigned long duration = echoEndTime - echoStartTime;
@@ -412,4 +542,12 @@ float getDistance() {
     }
 
     return lastDistance;
+}
+
+void checkWiFi() {
+    if (WiFi.status() != WL_CONNECTED) {
+        WiFi.begin(ssid, password);
+        Serial.println("Reconnecting to WiFi...");
+        delay(1000); // Adjust as needed
+    }
 }
