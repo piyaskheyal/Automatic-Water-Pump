@@ -82,7 +82,7 @@ const unsigned char sensorError [] PROGMEM = {
 
 unsigned long holdStartTime = 0;
 bool holdActive = false;
-const unsigned long holdDuration = 90000; // 1.5 minutes in milliseconds
+const unsigned long holdDuration = 60000; // 1 minutes in milliseconds
 
 
 /*
@@ -127,8 +127,8 @@ U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 ||                                 Container Spec                                       ||
 ==========================================================================================
 */
-const int lowerThreshold = 25;
-const int upperThreshold = 80;
+const int lowerThreshold = 30;
+const int upperThreshold = 85;
 const int extremeUpperThreshold = 95;
 const int containerOffset = 15;
 const int containerHeight = 115;  // Maximum measurable distance in cm
@@ -139,11 +139,6 @@ const int hysteresis = 2; // 2% buffer
 ||                               Button Variables                                       ||
 ==========================================================================================
 */
-// const int buttonPin = 32;           // GPIO connected to the button
-// volatile bool buttonReleased = false; // Flag set by the ISR
-// unsigned long lastDebounceTime = 0; // Timestamp of last valid event
-// const unsigned long debounceDelay = 50; // Debounce time in ms
-// volatile unsigned long lastButtonInterruptTime = 0;
 
 const int buttonPin = 32;           // GPIO connected to the button
 volatile bool buttonPressed = false; // Flag set by the ISR
@@ -421,10 +416,6 @@ void loop() {
         }
         digitalWrite(motorPin, motorState ? HIGH : LOW);
 
-        
-        // Calculate the fill height for the bar:
-        // When waterLevelPercentage is 100, fill height equals barMaxHeight (full bar);
-        // When waterLevelPercentage is 0, fill height is 0.
         int fillHeight = (waterLevelPercentage * barMaxHeight / 100.0);
         // Compute the top Y coordinate of the filled area (to fill from the bottom up)
         int fillY = barY + (barMaxHeight - fillHeight);
