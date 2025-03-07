@@ -327,10 +327,16 @@ void loop() {
     }else{
         Serial.println("Time unavilable.  Skipping auto Toggle");
     }
-    if(hr == 12 && min == 30){
+    if(hr == 1 && min == 30){
+        // Visual feedback
+        u8g2.clearBuffer();
+        u8g2.setFont(u8g2_font_ncenB08_tr);
+        u8g2.drawStr(10, 32, "Scheduled Restart");
+        u8g2.sendBuffer();
+
+        delay(60*1000);  // Ensure display updates
+
         ESP.restart();
-        u8g2.begin();
-        delay(6*1000);
     }
     bool withinAllowedHours = 
     (hr >= 7 && hr < 12) || 
