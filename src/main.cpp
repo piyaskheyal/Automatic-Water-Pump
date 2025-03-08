@@ -76,17 +76,6 @@ const unsigned char sensorError [] PROGMEM = {
 
 /*
 ==========================================================================================
-||                                  Hold Mechanism                                      ||
-==========================================================================================
-*/
-
-unsigned long holdStartTime = 0;
-bool holdActive = false;
-const unsigned long holdDuration = 60000; // 1 minutes in milliseconds
-
-
-/*
-==========================================================================================
 ||                                  Wi-Fi & Timer                                       ||
 ==========================================================================================
 */
@@ -371,7 +360,6 @@ void loop() {
 
         if (getEvent()) {
             motorState = !motorState;  // Toggle state manually (no cooldown)
-            holdActive = false;
             Serial.println("Manual Toggle!");
         }else {
             // Auto-toggle with cooldown protection
@@ -379,7 +367,6 @@ void loop() {
                 // Auto-on: if water level is too low, turn on the pump
                 if (!motorState && (millis() - lastAutoToggleTime >= toggleCooldown)) {
                     motorState = true;
-                    holdActive = false;  // Cancel any hold if active
                     lastAutoToggleTime = millis();
                     Serial.println("Auto-ON (Low Level)");
                 }
@@ -387,31 +374,15 @@ void loop() {
                 if (motorState) {
                     motorState = false;
                     lastAutoToggleTime = millis();  // Reset cooldown
-                    holdActive = false;  // Cancel any active hold
                     Serial.println("Emergency OFF (Extreme Level)");
                 }
             }else if (waterLevelPercentage > (upperThreshold + hysteresis)) {
-                // Auto-off: water level is high. Use hold mechanism.
-                if (motorState) {  // Only apply if pump is currently on
-                    if (!holdActive) {
-                        // Start the hold period
-                        holdActive = true;
-                        holdStartTime = millis();
-                        Serial.println("Hold period started for auto-off");
-                    } else if (millis() - holdStartTime >= holdDuration) {
-                        // Hold period has expired. Check sensor again:
-                        if (waterLevelPercentage > (upperThreshold)) {
-                            motorState = false;
-                            lastAutoToggleTime = millis();
-                            Serial.println("Auto-OFF (High Level) after hold");
-                        }
-                        // Reset the hold flag in either case.
-                        holdActive = false;
-                    }
+                // Immediate shutdown when upper threshold is crossed
+                if (motorState && (millis() - lastAutoToggleTime >= toggleCooldown)) {
+                    motorState = false;
+                    lastAutoToggleTime = millis();
+                    Serial.println("Auto-OFF (High Level)");
                 }
-            } else {
-                // If water level is not above the upper threshold, cancel any hold
-                holdActive = false;
             }
         }
         
@@ -448,7 +419,7 @@ void loop() {
         }
 
         static unsigned long lastUpdate = 0;
-        if (millis() - lastUpdate >= 10) {  // Non-blocking delay
+        if (millis() - lastUpdate >= 10) {
             lastUpdate = millis();
             u8g2.sendBuffer();
         }
