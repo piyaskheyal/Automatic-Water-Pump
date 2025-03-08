@@ -117,7 +117,7 @@ U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 ==========================================================================================
 */
 const int lowerThreshold = 30;
-const int upperThreshold = 85;
+const int upperThreshold = 88;
 const int extremeUpperThreshold = 95;
 const int containerOffset = 15;
 const int containerHeight = 115;  // Maximum measurable distance in cm
