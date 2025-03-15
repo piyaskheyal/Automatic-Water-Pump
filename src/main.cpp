@@ -332,6 +332,13 @@ void loop() {
     (hr == 13 && min >= 30) ||  // 1:30 PM to 1:59 PM
     (hr >= 14 && hr < 18);      // 2:00 PM to 5:59 PM
 
+    bool withinDisallowedHours = 
+    (hr == 18 && min >= 20)||
+    (hr >= 19 && hr <= 24)||
+    (hr >= 0 && hr < 7)||
+    (hr == 12 && min >= 20)||
+    (hr == 13 && min < 30);
+
     float d = getDistance();
 
     Serial.print("Distance: ");
@@ -370,7 +377,7 @@ void loop() {
                     lastAutoToggleTime = millis();
                     Serial.println("Auto-ON (Low Level)");
                 }
-            }else if (waterLevelPercentage > extremeUpperThreshold) {// Extreme level check (MUST COME BEFORE REGULAR UPPER CHECK)
+            }else if (waterLevelPercentage > extremeUpperThreshold) {// Extreme level check
                 if (motorState) {
                     motorState = false;
                     lastAutoToggleTime = millis();  // Reset cooldown
@@ -383,6 +390,10 @@ void loop() {
                     lastAutoToggleTime = millis();
                     Serial.println("Auto-OFF (High Level)");
                 }
+            }else if(withinDisallowedHours && motorState){
+                motorState = false;
+                lastAutoToggleTime = millis();
+                Serial.println("Auto-OFF (Within Disallowed Hours)");
             }
         }
         
